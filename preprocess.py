@@ -4,7 +4,7 @@ import spacy
 from logger import Logger
 from sklearn.preprocessing import OneHotEncoder
 # from sklearn.manifold import TSNE, SpectralEmbedding
-from sklearn.decomposition import KernelPCA
+# from sklearn.decomposition import KernelPCA
 from typing import Dict, List, Any
 from warnings import catch_warnings, simplefilter
 from static import INPUT, OUTPUT, EMBEDDED_FEATURES, BINARY_NAN_FEATURES, ONEHOT_FEATURES, \
@@ -41,20 +41,21 @@ def process_dataframes() -> None:
         train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df], axis=1)
 
     # TEXT EMBEDDINGS
-    logger.debug(f'\tEncoding the features using a text embedding (spacy + rbf-KernelPCA)')
-    manifold_mappers: Dict[str, Any] = {
-        _f: KernelPCA(n_components=_n, kernel='rbf') for _f, _n in EMBEDDED_FEATURES.items()}
-    for _f, _n in EMBEDDED_FEATURES.items():
+    logger.debug(f'\tEncoding the features using a text embedding')
+    # manifold_mappers: Dict[str, Any] = {
+    #     _f: KernelPCA(n_components=_n, kernel='rbf') for _f, _n in EMBEDDED_FEATURES.items()}
+    for _f, _ in EMBEDDED_FEATURES.items():
         # we first encode the text into a vector for each sample of the feature's pd.Series
         logger.debug(f"\t\tEncoding {_f} using spaCy")
         _encoded_arr = text_encode_feature(train[_f])
-        logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
-        _embedded_arr: np.ndarray = manifold_mappers[_f].fit_transform(_encoded_arr)
-        _embedded_df = pd.DataFrame(_embedded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_n)], index=train.index)
+        # logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
+        # _embedded_arr: np.ndarray = manifold_mappers[_f].fit_transform(_encoded_arr)
+        _embedded_df = pd.DataFrame(
+            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
         train = pd.concat([train.drop(labels=_f, axis=1), _embedded_df], axis=1)
 
     # LAST CHECKS
-    _perform_sanity_checks(train)
+    perform_sanity_checks(train)
     # DATAFRAME SERIALIZATION
     train.to_csv(f'{OUTPUT}/train.csv', index=True)
 
@@ -79,19 +80,19 @@ def process_dataframes() -> None:
             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
         test = pd.concat([test.drop(labels=_f, axis=1), _encoded_df], axis=1)
 
-    # TEXT EMBEDDINGS
-    logger.debug(f'\tApplying the mappers to encode features using a text embedding (spacy + t-SNE)')
-    for _f, _n in EMBEDDED_FEATURES.items():
+    logger.debug(f'\tEncoding the features using a text embedding')
+    for _f, _ in EMBEDDED_FEATURES.items():
         # we first encode the text into a vector for each sample of the feature's pd.Series
         logger.debug(f"\t\tEncoding {_f} using spaCy")
         _encoded_arr = text_encode_feature(test[_f])
-        logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
-        _embedded_arr: np.ndarray = manifold_mappers[_f].transform(_encoded_arr)
-        _embedded_df = pd.DataFrame(_embedded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_n)], index=test.index)
+        # logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
+        # _embedded_arr: np.ndarray = manifold_mappers[_f].fit_transform(_encoded_arr)
+        _embedded_df = pd.DataFrame(
+            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
         test = pd.concat([test.drop(labels=_f, axis=1), _embedded_df], axis=1)
 
     # LAST CHECKS
-    _perform_sanity_checks(test)
+    perform_sanity_checks(test)
     # DATAFRAME SERIALIZATION
     test.to_csv(f'{OUTPUT}/test.csv', index=True)
 
@@ -216,23 +217,19 @@ def _add_nan_per_sample(features: pd.DataFrame) -> pd.Series:
 ##################################################################################################################
 
 
-def _perform_sanity_checks(dataframe: pd.DataFrame) -> None:
-    nans: int = np.count_nonzero(np.isnan(dataframe))
-
-    if __feature_sample_ratio_is_high(dataframe):
-        logger.warning("\t\tThe feature / sample ratio is above 0.1!")
+def perform_sanity_checks(dataframe: pd.DataFrame) -> None:
+    nans: int = np.count_nonzero(pd.isna(dataframe))
+    _feature_sample_ratio: float = len(dataframe.columns) / len(dataframe)
+    if _feature_sample_ratio > 0.1:
+        logger.warning(f"\t\tThe feature / sample ratio is above 0.1: {_feature_sample_ratio}!")
     else:
-        logger.debug("\t\tCheck passed: feature / sample ratio below 0.1")
+        logger.debug(f"\t\tCheck passed: feature / sample ratio below 0.1: {_feature_sample_ratio}")
 
     if nans > 0:
         logger.warning(f"\t\tThere are still NaN in the data: {nans}. "
                        f"Consider handling them before training.")
     else:
         logger.debug("\t\tCheck passed: there is no NaN in the data")
-
-
-def __feature_sample_ratio_is_high(dataframe: pd.DataFrame) -> bool:
-    return len(dataframe.columns) / len(dataframe) > 0.1
 
 
 def __reduce_mem_usage(dataframe: pd.DataFrame,
