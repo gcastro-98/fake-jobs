@@ -32,9 +32,9 @@ def process_dataframes() -> None:
     train = basic_preprocessing(train)
 
     # ONE-HOT ENCODINGS
-    logger.debug(f'\tOne-hot encoding the features: {", ".join(ONEHOT_FEATURES)}')
-    onehot_encoders: Dict[str, Any] = {_f: OneHotEncoder() for _f in ONEHOT_FEATURES}
-    for _f in ONEHOT_FEATURES:
+    logger.debug(f'\tOne-hot encoding the features: {", ".join(ONEHOT_FEATURES + BINARY_NAN_FEATURES)}')
+    onehot_encoders: Dict[str, Any] = {_f: OneHotEncoder() for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES}
+    for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES:
         _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
         _encoded_df = pd.DataFrame(
             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
@@ -57,7 +57,7 @@ def process_dataframes() -> None:
     # LAST CHECKS
     perform_sanity_checks(train)
     # DATAFRAME SERIALIZATION
-    train.to_csv(f'{OUTPUT}/train.csv', index=True)
+    __reduce_mem_usage(train).to_csv(f'{OUTPUT}/train.csv', index=True)
 
     ################################################################
     # TEST DATAFRAME
@@ -74,7 +74,7 @@ def process_dataframes() -> None:
 
     # ONE-HOT ENCODINGS
     logger.debug(f'\tApplying the encoders to one-hot encode the short categorical features')
-    for _f in ONEHOT_FEATURES:
+    for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES:
         _encoded_arr: np.ndarray = onehot_encoders[_f].transform(test[_f].values.reshape(-1, 1)).toarray()
         _encoded_df = pd.DataFrame(
             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
@@ -94,7 +94,7 @@ def process_dataframes() -> None:
     # LAST CHECKS
     perform_sanity_checks(test)
     # DATAFRAME SERIALIZATION
-    test.to_csv(f'{OUTPUT}/test.csv', index=True)
+    __reduce_mem_usage(test).to_csv(f'{OUTPUT}/test.csv', index=True)
 
 
 ######################################################################
@@ -299,6 +299,31 @@ def __reduce_mem_usage(dataframe: pd.DataFrame,
                        "been replaced by dataframe[col].min() -1:",
                        ", ".join(na_list))
     return dataframe
+
+
+# def _repair():
+#     """
+#     I forgot to one-hot encode the binary nan features
+#     """
+#     train = pd.read_csv("output/old_train.csv", index_col=0)
+#     test = pd.read_csv("output/old_test.csv", index_col=0)
+#
+#     onehot_encoders: Dict[str, Any] = {_f: OneHotEncoder() for _f in BINARY_NAN_FEATURES}
+#     for _f in BINARY_NAN_FEATURES:
+#         _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
+#         _encoded_df = pd.DataFrame(
+#             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
+#         train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df], axis=1)
+#     train = __reduce_mem_usage(train)
+#     train.to_csv('output/train.csv', index=True)
+#
+#     for _f in BINARY_NAN_FEATURES:
+#         _encoded_arr: np.ndarray = onehot_encoders[_f].transform(test[_f].values.reshape(-1, 1)).toarray()
+#         _encoded_df = pd.DataFrame(
+#             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
+#         test = pd.concat([test.drop(labels=_f, axis=1), _encoded_df], axis=1)
+#     test = __reduce_mem_usage(test)
+#     test.to_csv('output/test.csv', index=True)
 
 
 if __name__ == '__main__':
