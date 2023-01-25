@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from logger import Logger
-# from sklearn.preprocessing import OneHotEncoder
+# from sklearn.decomposition import PCA
 from typing import List, Dict, Tuple
 from warnings import catch_warnings, simplefilter
 from static import INPUT, EMBEDDED_FEATURES, BINARY_NAN_FEATURES, ONEHOT_FEATURES, \
@@ -33,19 +33,13 @@ def process_dataframes(_save_data: bool = False) -> Tuple[np.ndarray, ...]:
     train = basic_preprocessing(train)
     train.drop(labels=BINARY_NAN_FEATURES, axis=1, inplace=True)
 
-    # # ONE-HOT the 'binary-nan' features
-    # logger.debug(f'\tOne-hot encoding the features: {", ".join(BINARY_NAN_FEATURES)}')
-    # onehot_encoders: Dict[str, OneHotEncoder] = {_f: OneHotEncoder() for _f in BINARY_NAN_FEATURES}
-    # for _f in BINARY_NAN_FEATURES:
-    #     _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
-    #     _encoded_df = pd.DataFrame(
-    #         _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
-    #     train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df.astype(np.uint8)], axis=1)
-
     # TEXT EMBEDDINGS
     x_train_df = train.drop(labels=LABEL, axis=1)
     x_train = embed_text_features_separately(x_train_df, columns=EMBEDDED_FEATURES + ONEHOT_FEATURES, train=True)
-    y_train = train[[LABEL]].values
+    y_train = train[LABEL].values
+
+    # pca = PCA(n_components=x_train.shape[0] // 2)
+    # x_train = pca.fit_transform(x_train.toarray())
 
     # TRAIN DATA SERIALIZATION
     if _save_data:
@@ -79,6 +73,8 @@ def process_dataframes(_save_data: bool = False) -> Tuple[np.ndarray, ...]:
     # TEXT EMBEDDINGS
     x_test = embed_text_features_separately(test, columns=EMBEDDED_FEATURES + ONEHOT_FEATURES, train=False)
 
+    # x_test = pca.transform(x_test.toarray())
+
     # LAST CHECKS
     # perform_sanity_checks(test)
     # test = __reduce_bow_df_mem_usage(test)
@@ -100,31 +96,26 @@ def embed_text_features(df: pd.DataFrame, columns: List[str], train: bool) -> np
     global vectorizers
     logger.debug(f"\tApplying a TF-IDF vectorizer to embed the text of the categorical features")
 
-    # first we merge all the columns in one...
     logger.debug(f"\t\tCleaning the merged text")
     text: pd.Series = clean_text_feature(df[columns].apply('. '.join, axis=1))
 
     if train:
         logger.debug(f"\t\tTraining the vectorizer to the merged text")
         vectorizers['all'] = TfidfVectorizer()
+        # __check_vectorizer_not_trained(vectorizers['all'])
         text_vectors = vectorizers['all'].fit_transform(text)
+        # __check_vectorizer_is_trained(vectorizers['all'])
     else:
         logger.debug(f"\t\tApplying the trained vectorizer to the merged text")
-        # then we just transform the text data
+        # __check_vectorizer_is_trained(vectorizers['all'])
         text_vectors = vectorizers['all'].transform(text)
 
-    # create a new DataFrame with the embedded text
-    # _df_labels: List[str] = [f"{_f}_{'all'}" for _f in vectorizers['all'].get_feature_names_out()]
-
-    # return pd.concat([df.drop(labels=columns, axis=1), pd.DataFrame(
-    #     text_vectors.toarray(), columns=_df_labels, index=df.index).astype(
-    #             np.uint8)], axis=1)
     _train_arr: np.ndarray = df.drop(labels=columns, axis=1)
     _train_arr = hstack((_train_arr, text_vectors))
     return _train_arr
 
 
-def embed_text_features_separately(df: pd.DataFrame, columns: List[str], train: bool) -> np.ndarray:
+def embed_text_features_separately(df: pd.DataFrame, columns: List[str], train: bool):
     global vectorizers
     logger.debug(f"\tApplying a TF-IDF vectorizer to embed the text of the categorical features")
     sparse_matrices: list = []
@@ -133,18 +124,15 @@ def embed_text_features_separately(df: pd.DataFrame, columns: List[str], train: 
         if train:
             logger.debug(f"\t\tTraining the vectorizer to the column: {col}")
             vectorizers[col] = TfidfVectorizer()
+            # __check_vectorizer_not_trained(vectorizers[col])
             text_vectors = vectorizers[col].fit_transform(text)
+            # __check_vectorizer_is_trained(vectorizers[col])
         else:
             logger.debug(f"\t\tApplying the trained vectorizer to the column: {col}")
-            # then we just transform the text data
+            # __check_vectorizer_is_trained(vectorizers[col])
             text_vectors = vectorizers[col].transform(text)
         sparse_matrices.append(text_vectors)
-        # create a new DataFrame with the embedded text
-        # _df_labels: List[str] = [f"{_f}_{col}" for _f in vectorizers[col].get_feature_names_out()]
-        # embedded_text_df = pd.concat(
-        #     [embedded_text_df, pd.DataFrame(text_vectors.toarray(), columns=_df_labels, index=df.index).astype(
-        #         np.uint8)], axis=1)
-    # return pd.concat([df.drop(labels=columns, axis=1), embedded_text_df.astype(np.uint8)], axis=1)
+
     sparse_final_matrix = sparse_matrices[0]
     for _s in sparse_matrices[1:]:
         sparse_final_matrix = hstack((sparse_final_matrix, _s))
@@ -152,6 +140,27 @@ def embed_text_features_separately(df: pd.DataFrame, columns: List[str], train: 
     _feature_arr: np.ndarray = df.drop(labels=columns, axis=1)
     _feature_arr = hstack((_feature_arr, sparse_final_matrix))
     return _feature_arr
+
+
+def __check_vectorizer_not_trained(vectorizer: TfidfVectorizer) -> None:
+    from sklearn.utils.validation import check_is_fitted
+    from sklearn.exceptions import NotFittedError
+    try:
+        check_is_fitted(vectorizer, '_tfidf', msg='The tfidf vector is not fitted')
+    except NotFittedError:
+        print("Indeed the vectorizer is not trained")
+        return
+    raise Exception("The vectorizer is already fitted!")
+
+
+def __check_vectorizer_is_trained(vectorizer: TfidfVectorizer) -> None:
+    from sklearn.utils.validation import check_is_fitted
+    from sklearn.exceptions import NotFittedError
+    try:
+        check_is_fitted(vectorizer, '_tfidf', msg='The tfidf vector is not fitted')
+        print("Indeed the vectorizer is trained")
+    except NotFittedError as error:
+        raise NotFittedError("The vectorizer is not trained!") from error
 
 
 def clean_text_feature(df: pd.Series) -> pd.Series:

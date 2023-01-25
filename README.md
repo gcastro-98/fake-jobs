@@ -64,5 +64,5 @@ $ conda activate fake-jobs
 
 Once with the environment activated, place yourself in the package folder and just type the following to run the scripts:
 ```console
-python main.py
+python inference.py
 ```

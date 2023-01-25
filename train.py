@@ -1,15 +1,14 @@
 from random import randint
 import pickle
 import numpy as np
-import pandas as pd
 from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
 from typing import Tuple, Any
 from xgboost import XGBClassifier
 
 from logger import Logger
-from static import OUTPUT, LABEL
+from static import OUTPUT
 
 
 logger = Logger()
@@ -33,33 +32,39 @@ def train_to_asses(x: np.ndarray, y: np.ndarray) -> None:
     logger.warning("TRAINING THE MODEL AND ASSESSING THE SKILL")
     # df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
     # x, y = df[[_c for _c in df.columns if _c != LABEL]], df[[LABEL]]
-    x_train, x_test, y_train, y_test = random_split(x, y, train_size=0.5)
+    x_train, x_test, y_train, y_test = random_split(x, y, train_size=0.65)
     model = _train(x_train, y_train)
     metric: float = f1_score(y_test, model.predict(x_test))
     logger.info(f"The performance of the model in the test step is: F1 = {metric}")
 
 
-def _train(x_train: np.ndarray, y_train: np.ndarray, n: int = 5) -> Any:
+def _train(x_train: np.ndarray, y_train: np.ndarray, n: int = 3) -> Any:
     cv_results: dict = {}  # score: model
 
     logger.info(f"Training in a {n}-StratifiedKFold CV to choose the best one. WAIT")
     skf = StratifiedKFold(n_splits=n, shuffle=True)
+    # from sklearn.model_selection import KFold
+    # skf = KFold(n_splits=n)
     for _train_ind, _val_ind in skf.split(x_train, y_train):
         model = compile_model(randint(1, 100))
         _x_train, _x_val = x_train[_train_ind], x_train[_val_ind]
         _y_train, _y_val = y_train[_train_ind], y_train[_val_ind]
-        model.fit(_x_train, _y_train.ravel(), eval_set=[(_x_val, _y_val.ravel())], verbose=1)
+        try:
+            model.fit(_x_train, _y_train.ravel(), eval_set=[(_x_val, _y_val.ravel())], verbose=1)
+        except TypeError:  # then it does not contain eval_set as attribute
+            model.fit(_x_train, _y_train.ravel())
 
         # we manually save the model and the score
-        _loss: float = model.score(_x_val, _y_val.ravel())
+        _loss: float = f1_score(_y_val.ravel(), model.predict(_x_val))
         cv_results[_loss] = model
-    logger.debug(f"\tTraining finished with validation AUC: "
+        logger.debug(f"\tModel trained with validation F1 = {_loss}")
+    logger.debug(f"\tTraining finished with validations F1: "
                  f"{', '.join([str(_s) for _s in cv_results.keys()])}")
 
     _sorted_cv_dict: dict = dict(
         sorted(cv_results.items(), key=lambda x: x[0], reverse=True))
 
-    logger.info(f"Selecting the model with AUC = {list(_sorted_cv_dict.keys())[0]}")
+    logger.info(f"Selecting the model with F1 = {list(_sorted_cv_dict.keys())[0]}")
     return list(_sorted_cv_dict.values())[0]
 
 
@@ -68,15 +73,15 @@ def compile_model(random_state: int) -> Any:
     #    return RandomForestClassifier(max_depth=5, random_state=random_state, n_estimators=1500)
 
     best_params = {
-        'subsample': 0.8, 'n_estimators': 5000, 'min_child_weight': 12,
-        'max_depth': 4, 'learning_rate': 0.05, 'gamma': 2, 'colsample_bytree': 0.9}
-
+        'subsample': 0.8, 'n_estimators': 1500, 'min_child_weight': 12,
+        'max_depth': 6, 'learning_rate': 0.05, 'gamma': 1, 'colsample_bytree': 0.8}
     best_params.update(
         {'objective': 'binary:logistic', 'nthread': -1, 'seed': random_state,
          'eval_metric': 'auc', 'use_label_encoder': False, 'early_stopping_rounds': 50})
     model = XGBClassifier(**best_params)
-    logger.debug("\tCompiling an XGB regressor with the following"
-                 f" hyper-parameters: {best_params.__str__()}")
+    # logger.debug("\tCompiling an XGB regressor with the following hyperparameters: {best_params.__str__()}")
+
+    # model = RandomForestClassifier(max_depth=30, n_estimators=2000, random_state=random_state)
     return model
 
 
@@ -102,29 +107,15 @@ def random_split(features: np.ndarray, labels: np.ndarray,
 # MODEL FINE-TUNING
 ############################################################################################
 
-def __random_search() -> None:
+def __random_search(x_train: np.ndarray, y_train: np.ndarray) -> None:
     """
     Parameter grid search for XGBoost
     """
-    df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
-    x, y = df[[_c for _c in df.columns if str(_c) != LABEL]], df[[LABEL]]
-    x_train, y_train = StandardScaler().fit_transform(x.values), y.values
+    params, model = __define_params_and_model('xgb')
 
-    # We define some parameters to explore
-    params = {
-        'learning_rate': [0.02, 0.01, 0.005],
-        'n_estimators': [1200, 1500, 1800, 2100, 2400],
-        'min_child_weight': [10, 12, 15, 18, 21],
-        'gamma': [1, 2, 5],
-        'subsample': [0.8, 0.9, 1.],
-        'colsample_bytree': [0.8, 0.9, 1.],
-        'max_depth': [2, 3, 5]
-    }
-
-    xgb = XGBClassifier(**{'objective': 'binary:logistic', 'eval_metric': 'auc', 'use_label_encoder': False})
     skf = StratifiedKFold(n_splits=2, shuffle=False)
     random_search = RandomizedSearchCV(
-        xgb, param_distributions=params, n_iter=10, scoring='f1',
+        model, param_distributions=params, n_iter=10, scoring='f1',
         verbose=2, cv=skf.split(x_train, y_train))
     # scoring metrics: https://scikit-learn.org/stable/modules/model_evaluation.html#scoring-parameter
     logger.info("WAIT: this may take a while")
@@ -139,8 +130,36 @@ def __random_search() -> None:
     # results.to_csv(f'{OUTPUT}/search_results.csv', index=False)
 
 
+def __define_params_and_model(arquitecture: str):
+    if arquitecture == 'xgb':
+        # We define some parameters to explore
+        params = {
+            'learning_rate': [0.02, 0.01, 0.005],
+            'n_estimators': [1200, 1500, 1800, 2100, 2400],
+            'min_child_weight': [10, 12, 15, 18, 21],
+            'gamma': [1, 2, 5],
+            'subsample': [0.8, 0.9, 1.],
+            'colsample_bytree': [0.8, 0.9, 1.],
+            'max_depth': [2, 3, 5]
+        }
+        model = XGBClassifier(**{'objective': 'binary:logistic', 'eval_metric': 'auc', 'use_label_encoder': False})
+
+    elif arquitecture == 'rf':
+        # We define some parameters to explore
+        params = {
+            'n_estimators': [200, 500, 800, 1200, 1600, 1800, 2500, 5000],
+            'max_depth': [2, 3, 5, 8]
+        }
+        model = RandomForestClassifier()
+
+    else:
+        raise KeyError(f"Unrecognized arquitecture: {arquitecture}")
+    return params, model
+
+
 if __name__ == '__main__':
     from preprocess import process_dataframes
     __x_train, __y_train, _ = process_dataframes()
+    # __random_search(__x_train, __y_train)
     # train_to_infere(__x_train, __y_train)
     train_to_asses(__x_train, __y_train)
