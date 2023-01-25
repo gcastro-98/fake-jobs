@@ -1,17 +1,18 @@
 import pandas as pd
 import numpy as np
-import spacy
+from sklearn.feature_extraction.text import TfidfVectorizer
 from logger import Logger
-from sklearn.preprocessing import OneHotEncoder
-# from sklearn.manifold import TSNE, SpectralEmbedding
-# from sklearn.decomposition import KernelPCA
-from typing import Dict, List, Any
+# from sklearn.preprocessing import OneHotEncoder
+from typing import List, Dict, Tuple
 from warnings import catch_warnings, simplefilter
-from static import INPUT, OUTPUT, EMBEDDED_FEATURES, BINARY_NAN_FEATURES, ONEHOT_FEATURES, \
-    NUMERICAL_FEATURE, SYNTHETIC_FEATURE
+from static import INPUT, EMBEDDED_FEATURES, BINARY_NAN_FEATURES, ONEHOT_FEATURES, \
+    NUMERICAL_FEATURE, SYNTHETIC_FEATURE, LABEL, OUTPUT
+from scipy.sparse import hstack
+import nltk
 
-
-nlp = spacy.load('en_core_web_sm')  # spacy.load('en_core_web_md')
+nltk.download('stopwords')
+stop = nltk.corpus.stopwords.words('english')
+vectorizers: Dict[str, TfidfVectorizer] = {}
 logger = Logger()
 
 
@@ -19,7 +20,7 @@ logger = Logger()
 # MAIN
 #######################################################################
 
-def process_dataframes() -> None:
+def process_dataframes(_save_data: bool = False) -> Tuple[np.ndarray, ...]:
     ################################################################
     # TRAIN DATAFRAME
     ################################################################
@@ -30,34 +31,28 @@ def process_dataframes() -> None:
 
     # NECESSARY PREPROCESSING (nan removal & encoding into strings)
     train = basic_preprocessing(train)
+    train.drop(labels=BINARY_NAN_FEATURES, axis=1, inplace=True)
 
-    # ONE-HOT ENCODINGS
-    logger.debug(f'\tOne-hot encoding the features: {", ".join(ONEHOT_FEATURES + BINARY_NAN_FEATURES)}')
-    onehot_encoders: Dict[str, Any] = {_f: OneHotEncoder() for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES}
-    for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES:
-        _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
-        _encoded_df = pd.DataFrame(
-            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
-        train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df], axis=1)
+    # # ONE-HOT the 'binary-nan' features
+    # logger.debug(f'\tOne-hot encoding the features: {", ".join(BINARY_NAN_FEATURES)}')
+    # onehot_encoders: Dict[str, OneHotEncoder] = {_f: OneHotEncoder() for _f in BINARY_NAN_FEATURES}
+    # for _f in BINARY_NAN_FEATURES:
+    #     _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
+    #     _encoded_df = pd.DataFrame(
+    #         _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
+    #     train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df.astype(np.uint8)], axis=1)
 
     # TEXT EMBEDDINGS
-    logger.debug(f'\tEncoding the features using a text embedding')
-    # manifold_mappers: Dict[str, Any] = {
-    #     _f: KernelPCA(n_components=_n, kernel='rbf') for _f, _n in EMBEDDED_FEATURES.items()}
-    for _f, _ in EMBEDDED_FEATURES.items():
-        # we first encode the text into a vector for each sample of the feature's pd.Series
-        logger.debug(f"\t\tEncoding {_f} using spaCy")
-        _encoded_arr = text_encode_feature(train[_f])
-        # logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
-        # _embedded_arr: np.ndarray = manifold_mappers[_f].fit_transform(_encoded_arr)
-        _embedded_df = pd.DataFrame(
-            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
-        train = pd.concat([train.drop(labels=_f, axis=1), _embedded_df], axis=1)
+    x_train_df = train.drop(labels=LABEL, axis=1)
+    x_train = embed_text_features_separately(x_train_df, columns=EMBEDDED_FEATURES + ONEHOT_FEATURES, train=True)
+    y_train = train[[LABEL]].values
 
-    # LAST CHECKS
-    perform_sanity_checks(train)
-    # DATAFRAME SERIALIZATION
-    __reduce_mem_usage(train).to_csv(f'{OUTPUT}/train.csv', index=True)
+    # TRAIN DATA SERIALIZATION
+    if _save_data:
+        logger.debug("\tSerializing the train data")
+        with open(f'{OUTPUT}/train.npz', 'wb') as train_outfile:
+            np.savez(train_outfile,
+                     x=x_train, y=y_train)
 
     ################################################################
     # TEST DATAFRAME
@@ -71,48 +66,106 @@ def process_dataframes() -> None:
 
     # NECESSARY PREPROCESSING (nan removal & encoding into strings)
     test = basic_preprocessing(test)
+    test.drop(labels=BINARY_NAN_FEATURES, axis=1, inplace=True)
 
-    # ONE-HOT ENCODINGS
-    logger.debug(f'\tApplying the encoders to one-hot encode the short categorical features')
-    for _f in ONEHOT_FEATURES + BINARY_NAN_FEATURES:
-        _encoded_arr: np.ndarray = onehot_encoders[_f].transform(test[_f].values.reshape(-1, 1)).toarray()
-        _encoded_df = pd.DataFrame(
-            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
-        test = pd.concat([test.drop(labels=_f, axis=1), _encoded_df], axis=1)
+    # # ONE-HOT ENCODINGS
+    # logger.debug(f'\tApplying the encoders to one-hot encode the short categorical features')
+    # for _f in BINARY_NAN_FEATURES:
+    #     _encoded_arr: np.ndarray = onehot_encoders[_f].transform(test[_f].values.reshape(-1, 1)).toarray()
+    #     _encoded_df = pd.DataFrame(
+    #         _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
+    #     test = pd.concat([test.drop(labels=_f, axis=1), _encoded_df.astype(np.uint8)], axis=1)
 
-    logger.debug(f'\tEncoding the features using a text embedding')
-    for _f, _ in EMBEDDED_FEATURES.items():
-        # we first encode the text into a vector for each sample of the feature's pd.Series
-        logger.debug(f"\t\tEncoding {_f} using spaCy")
-        _encoded_arr = text_encode_feature(test[_f])
-        # logger.debug(f"\t\tEmbedding {_f} in a {_n} space using a rbf-KernelPCA")
-        # _embedded_arr: np.ndarray = manifold_mappers[_f].fit_transform(_encoded_arr)
-        _embedded_df = pd.DataFrame(
-            _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
-        test = pd.concat([test.drop(labels=_f, axis=1), _embedded_df], axis=1)
+    # TEXT EMBEDDINGS
+    x_test = embed_text_features_separately(test, columns=EMBEDDED_FEATURES + ONEHOT_FEATURES, train=False)
 
     # LAST CHECKS
-    perform_sanity_checks(test)
-    # DATAFRAME SERIALIZATION
-    __reduce_mem_usage(test).to_csv(f'{OUTPUT}/test.csv', index=True)
+    # perform_sanity_checks(test)
+    # test = __reduce_bow_df_mem_usage(test)
+
+    # TEST DATA SERIALIZATION
+    if _save_data:
+        logger.debug("\tSerializing the test data")
+        with open(f'{OUTPUT}/test.npz', 'wb') as test_outfile:
+            np.savez(test_outfile, x=x_test)
+
+    return x_train, y_train, x_test
 
 
 ######################################################################
 # TEXT EMBEDDINGS
 ######################################################################
 
-def text_encode_feature(data: pd.Series) -> np.ndarray:
-    # working: process the text with spaCy and get the vector representation
-    # vector = nlp(text).vector
-    def __encode(text: str):
-        return nlp(text).vector[np.newaxis, :]
+def embed_text_features(df: pd.DataFrame, columns: List[str], train: bool) -> np.ndarray:
+    global vectorizers
+    logger.debug(f"\tApplying a TF-IDF vectorizer to embed the text of the categorical features")
 
-    # thus, applying it to the Series
-    text_samples: np.ndarray = data.astype(str).values
-    encoded_matrix = __encode(text_samples[0])
-    for _sample in text_samples[1:]:
-        encoded_matrix = np.concatenate([encoded_matrix, __encode(_sample)], axis=0)
-    return encoded_matrix
+    # first we merge all the columns in one...
+    logger.debug(f"\t\tCleaning the merged text")
+    text: pd.Series = clean_text_feature(df[columns].apply('. '.join, axis=1))
+
+    if train:
+        logger.debug(f"\t\tTraining the vectorizer to the merged text")
+        vectorizers['all'] = TfidfVectorizer()
+        text_vectors = vectorizers['all'].fit_transform(text)
+    else:
+        logger.debug(f"\t\tApplying the trained vectorizer to the merged text")
+        # then we just transform the text data
+        text_vectors = vectorizers['all'].transform(text)
+
+    # create a new DataFrame with the embedded text
+    # _df_labels: List[str] = [f"{_f}_{'all'}" for _f in vectorizers['all'].get_feature_names_out()]
+
+    # return pd.concat([df.drop(labels=columns, axis=1), pd.DataFrame(
+    #     text_vectors.toarray(), columns=_df_labels, index=df.index).astype(
+    #             np.uint8)], axis=1)
+    _train_arr: np.ndarray = df.drop(labels=columns, axis=1)
+    _train_arr = hstack((_train_arr, text_vectors))
+    return _train_arr
+
+
+def embed_text_features_separately(df: pd.DataFrame, columns: List[str], train: bool) -> np.ndarray:
+    global vectorizers
+    logger.debug(f"\tApplying a TF-IDF vectorizer to embed the text of the categorical features")
+    sparse_matrices: list = []
+    for col in columns:
+        text: pd.Series = clean_text_feature(df[col])
+        if train:
+            logger.debug(f"\t\tTraining the vectorizer to the column: {col}")
+            vectorizers[col] = TfidfVectorizer()
+            text_vectors = vectorizers[col].fit_transform(text)
+        else:
+            logger.debug(f"\t\tApplying the trained vectorizer to the column: {col}")
+            # then we just transform the text data
+            text_vectors = vectorizers[col].transform(text)
+        sparse_matrices.append(text_vectors)
+        # create a new DataFrame with the embedded text
+        # _df_labels: List[str] = [f"{_f}_{col}" for _f in vectorizers[col].get_feature_names_out()]
+        # embedded_text_df = pd.concat(
+        #     [embedded_text_df, pd.DataFrame(text_vectors.toarray(), columns=_df_labels, index=df.index).astype(
+        #         np.uint8)], axis=1)
+    # return pd.concat([df.drop(labels=columns, axis=1), embedded_text_df.astype(np.uint8)], axis=1)
+    sparse_final_matrix = sparse_matrices[0]
+    for _s in sparse_matrices[1:]:
+        sparse_final_matrix = hstack((sparse_final_matrix, _s))
+
+    _feature_arr: np.ndarray = df.drop(labels=columns, axis=1)
+    _feature_arr = hstack((_feature_arr, sparse_final_matrix))
+    return _feature_arr
+
+
+def clean_text_feature(df: pd.Series) -> pd.Series:
+    # Lowercase all text
+    df = df.str.lower()
+    # Remove numbers
+    df = df.str.replace(r'\d+', '', regex=True)
+    # Remove punctuation
+    df = df.str.replace(r'[^\w\s]', '', regex=True)
+    # Remove extra spaces
+    df = df.str.strip()
+    # Remove Stopwords
+    df = df.apply(lambda x: " ".join(x for x in x.split() if x not in stop))
+    return df
 
 
 #######################################################################
@@ -121,28 +174,31 @@ def text_encode_feature(data: pd.Series) -> np.ndarray:
 
 def basic_preprocessing(data: pd.DataFrame) -> pd.DataFrame:
     data = _location_extraction(data)
-    data = _empty_strings_as_nan(data, BINARY_NAN_FEATURES + ONEHOT_FEATURES)
-    data.drop(labels=[NUMERICAL_FEATURE, 'job_id'], axis=1, inplace=True)
+    data = _empty_strings_as_nan(data, BINARY_NAN_FEATURES + ONEHOT_FEATURES + EMBEDDED_FEATURES)
+    data.drop(labels=[NUMERICAL_FEATURE, 'job_id'], axis=1)
+    data = _binary_nan_encoding(data, BINARY_NAN_FEATURES)
     data = _encode_nan_as_strings(data)
     data[SYNTHETIC_FEATURE] = _add_nan_per_sample(data)
-    data = _binary_nan_encoding(data, BINARY_NAN_FEATURES)
+
     return data
 
 
 def _encode_nan_as_strings(data: pd.DataFrame) -> pd.DataFrame:
     logger.debug("\tEncoding the nans as '{col_name}_nan' strings.")
     for col in data.columns:
+        new_category = "nan"
         if data[col].dtype == 'category':
-            new_categories = [f"{str(col).replace(' ', '_')}_nan"]
             with catch_warnings():
                 simplefilter(action='ignore')
                 try:
-                    data[col].cat.add_categories(new_categories, inplace=True)
+                    data[col].cat.add_categories([new_category], inplace=True)
                 except ValueError:
                     # it means the new_category is already in the dataset
                     # (it comes from the binary nan encoding, i.e. location)
                     pass
-                data[col].fillna(new_categories[0], inplace=True)
+                data[col].fillna(new_category, inplace=True)
+        else:
+            data[col].fillna(new_category, inplace=True)
 
     return data
 
@@ -301,30 +357,5 @@ def __reduce_mem_usage(dataframe: pd.DataFrame,
     return dataframe
 
 
-# def _repair():
-#     """
-#     I forgot to one-hot encode the binary nan features
-#     """
-#     train = pd.read_csv("output/old_train.csv", index_col=0)
-#     test = pd.read_csv("output/old_test.csv", index_col=0)
-#
-#     onehot_encoders: Dict[str, Any] = {_f: OneHotEncoder() for _f in BINARY_NAN_FEATURES}
-#     for _f in BINARY_NAN_FEATURES:
-#         _encoded_arr: np.ndarray = onehot_encoders[_f].fit_transform(train[_f].values.reshape(-1, 1)).toarray()
-#         _encoded_df = pd.DataFrame(
-#             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=train.index)
-#         train = pd.concat([train.drop(labels=_f, axis=1), _encoded_df], axis=1)
-#     train = __reduce_mem_usage(train)
-#     train.to_csv('output/train.csv', index=True)
-#
-#     for _f in BINARY_NAN_FEATURES:
-#         _encoded_arr: np.ndarray = onehot_encoders[_f].transform(test[_f].values.reshape(-1, 1)).toarray()
-#         _encoded_df = pd.DataFrame(
-#             _encoded_arr, columns=[f"{_f}_{_i + 1}" for _i in range(_encoded_arr.shape[1])], index=test.index)
-#         test = pd.concat([test.drop(labels=_f, axis=1), _encoded_df], axis=1)
-#     test = __reduce_mem_usage(test)
-#     test.to_csv('output/test.csv', index=True)
-
-
 if __name__ == '__main__':
-    process_dataframes()
+    process_dataframes(_save_data=True)  # _save_data=True)

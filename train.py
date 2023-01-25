@@ -2,7 +2,6 @@ from random import randint
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler
@@ -16,24 +15,27 @@ from static import OUTPUT, LABEL
 logger = Logger()
 
 
-def main_for_prediction() -> None:
-    df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
-    x, y = df[[_c for _c in df.columns if _c != LABEL]], df[[LABEL]]
-    scaler = StandardScaler()
-    x_train, y_train = scaler.fit_transform(x.values), y.values
-    pickle.dump(scaler, open(f'{OUTPUT}/scaler.pkl', 'wb'))
+def train_to_infere(x_train: np.ndarray, y_train: np.ndarray) -> XGBClassifier:
+    logger.warning("TRAINING THE MODEL AND SAVING IT FOR INFERENCE")
+    # df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
+    # x, y = df[[_c for _c in df.columns if _c != LABEL]], df[[LABEL]]
+
+    # scaler = StandardScaler()
+    # x_train = scaler.fit_transform(x_train)
+    # pickle.dump(scaler, open(f'{OUTPUT}/scaler.pkl', 'wb'))
     model = _train(x_train, y_train)
     pickle.dump(model, open(f'{OUTPUT}/model.pkl', 'wb'))
 
+    return model
 
-def main_for_assesment() -> None:
-    df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
-    x, y = df[[_c for _c in df.columns if _c != LABEL]], df[[LABEL]]
-    x_train, x_test, y_train, y_test = _split_and_scale(x, y)
+
+def train_to_asses(x: np.ndarray, y: np.ndarray) -> None:
+    logger.warning("TRAINING THE MODEL AND ASSESSING THE SKILL")
+    # df: pd.DataFrame = pd.read_csv(f"{OUTPUT}/train.csv", index_col=0)
+    # x, y = df[[_c for _c in df.columns if _c != LABEL]], df[[LABEL]]
+    x_train, x_test, y_train, y_test = random_split(x, y, train_size=0.5)
     model = _train(x_train, y_train)
-
-    y_hat_test = model.predict(x_test)
-    metric: float = f1_score(y_test, y_hat_test)
+    metric: float = f1_score(y_test, model.predict(x_test))
     logger.info(f"The performance of the model in the test step is: F1 = {metric}")
 
 
@@ -46,30 +48,32 @@ def _train(x_train: np.ndarray, y_train: np.ndarray, n: int = 5) -> Any:
         model = compile_model(randint(1, 100))
         _x_train, _x_val = x_train[_train_ind], x_train[_val_ind]
         _y_train, _y_val = y_train[_train_ind], y_train[_val_ind]
-        model.fit(_x_train, _y_train.ravel(), eval_set=[(_x_val, _y_val.ravel())], verbose=0)
+        model.fit(_x_train, _y_train.ravel(), eval_set=[(_x_val, _y_val.ravel())], verbose=1)
 
         # we manually save the model and the score
         _loss: float = model.score(_x_val, _y_val.ravel())
         cv_results[_loss] = model
-    logger.debug(f"\tTraining finished with validation losses: "
+    logger.debug(f"\tTraining finished with validation AUC: "
                  f"{', '.join([str(_s) for _s in cv_results.keys()])}")
 
     _sorted_cv_dict: dict = dict(
         sorted(cv_results.items(), key=lambda x: x[0], reverse=True))
+
+    logger.info(f"Selecting the model with AUC = {list(_sorted_cv_dict.keys())[0]}")
     return list(_sorted_cv_dict.values())[0]
 
 
-def compile_model(random_state: int, _rf: bool = False) -> Any:
-    if _rf:
-        return RandomForestClassifier(max_depth=8, random_state=random_state, n_estimators=1500)
+def compile_model(random_state: int) -> Any:
+    # if _rf:
+    #    return RandomForestClassifier(max_depth=5, random_state=random_state, n_estimators=1500)
 
     best_params = {
-        'subsample': 1.0, 'n_estimators': 1500, 'min_child_weight': 12,
-        'max_depth': 5, 'learning_rate': 0.02, 'gamma': 2, 'colsample_bytree': 0.9}
+        'subsample': 0.8, 'n_estimators': 5000, 'min_child_weight': 12,
+        'max_depth': 4, 'learning_rate': 0.05, 'gamma': 2, 'colsample_bytree': 0.9}
 
     best_params.update(
         {'objective': 'binary:logistic', 'nthread': -1, 'seed': random_state,
-         'eval_metric': 'auc', 'use_label_encoder': False})
+         'eval_metric': 'auc', 'use_label_encoder': False, 'early_stopping_rounds': 50})
     model = XGBClassifier(**best_params)
     logger.debug("\tCompiling an XGB regressor with the following"
                  f" hyper-parameters: {best_params.__str__()}")
@@ -80,18 +84,17 @@ def compile_model(random_state: int, _rf: bool = False) -> Any:
 # AUXILIARY
 ############################################################################################
 
-def _split_and_scale(features: pd.DataFrame, labels: pd.DataFrame,
-                     train_size: float = 0.75) \
+def random_split(features: np.ndarray, labels: np.ndarray,
+                 train_size: float = 0.75) \
         -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     logger.debug(f"\t Splitting (using {np.round(train_size, 2)}, "
                  f"{np.round(1-train_size, 2)} split) and scaling the data.")
     x_train, x_test, y_train, y_test = train_test_split(
-        features.values, labels.values, train_size=train_size, shuffle=True)
-    scaler: StandardScaler = StandardScaler()
-    x_train = scaler.fit_transform(x_train)
-    x_test = scaler.fit_transform(x_test)
-
-    pickle.dump(scaler, open(f'{OUTPUT}/scaler.pkl', 'wb'))
+        features, labels, train_size=train_size, shuffle=True)
+    # scaler: StandardScaler = StandardScaler()
+    # x_train = scaler.fit_transform(x_train)
+    # x_test = scaler.fit_transform(x_test)
+    # pickle.dump(scaler, open(f'{OUTPUT}/scaler.pkl', 'wb'))
     return x_train, x_test, y_train, y_test
 
 
@@ -137,6 +140,7 @@ def __random_search() -> None:
 
 
 if __name__ == '__main__':
-    main_for_prediction()
-    # main_for_assesment()
-    # __random_search()
+    from preprocess import process_dataframes
+    __x_train, __y_train, _ = process_dataframes()
+    # train_to_infere(__x_train, __y_train)
+    train_to_asses(__x_train, __y_train)

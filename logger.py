@@ -61,10 +61,10 @@ class Logger(logging.Logger, metaclass=SingletonMeta):
         self.addHandler(handler)
 
         # & finally another one where to save all the info in a file...
-        f_handler = logging.FileHandler('summary.log')
-        f_handler.setLevel(logging.DEBUG)
-        f_handler.setFormatter(bw_formatter)
-        self.addHandler(f_handler)
+        # f_handler = logging.FileHandler('summary.log')
+        # f_handler.setLevel(logging.DEBUG)
+        # f_handler.setFormatter(bw_formatter)
+        # self.addHandler(f_handler)
 
     def _log(self, level: int, msg: object, args, **kwargs) -> None:
         """
